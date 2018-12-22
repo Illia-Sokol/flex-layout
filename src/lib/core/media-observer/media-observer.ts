@@ -5,10 +5,11 @@
  * Use of this source code is governed by an MIT-style license that can be
  * found in the LICENSE file at https://angular.io/license
  */
-import {Injectable} from '@angular/core';
+import {Inject, Injectable} from '@angular/core';
 import {Observable} from 'rxjs';
 import {filter, map} from 'rxjs/operators';
 
+import {LAYOUT_CONFIG, LayoutConfigOptions} from '../tokens/library-config';
 import {BreakPointRegistry} from '../breakpoints/break-point-registry';
 import {MediaChange} from '../media-change';
 import {MatchMedia} from '../match-media/match-media';
@@ -64,7 +65,10 @@ export class MediaObserver {
   filterOverlaps = true;
   readonly media$: Observable<MediaChange>;
 
-  constructor(private breakpoints: BreakPointRegistry, private mediaWatcher: MatchMedia) {
+  constructor(
+      protected breakpoints: BreakPointRegistry,
+      protected mediaWatcher: MatchMedia,
+      @Inject(LAYOUT_CONFIG) protected layoutConfig: LayoutConfigOptions) {
     this.media$ = this.watchActivations();
   }
 
@@ -108,16 +112,32 @@ export class MediaObserver {
      * Inject associated (if any) alias information into the MediaChange event
      * Exclude mediaQuery activations for overlapping mQs. List bounded mQ ranges only
      */
-    return this.mediaWatcher.observe(mqList)
-      .pipe(
-        filter(change => change.matches),
-        filter(excludeOverlaps),
-        map((change: MediaChange) =>
-          mergeAlias(change, locator.findByQuery(change.mediaQuery))
-        )
-      );
+    return this.mediaWatcher.observe(this.addPrintListener(mqList))
+        .pipe(
+            filter(change => change.matches),
+            filter(excludeOverlaps),
+            map((change: MediaChange) => {
+              const bp = (change.mediaQuery === 'print')
+                  ? locator.findByAlias(this.layoutConfig.printWithBreakpoint!)
+                  : locator.findByQuery(change.mediaQuery);
+              if (bp) {
+                change.mediaQuery = bp.mediaQuery;
+              }
+
+              return mergeAlias(change, bp);
+            })
+        );
   }
 
+  /**
+   * If configured, add listener for 'print'
+   */
+  protected addPrintListener(queries: string[]) {
+    if (!!this.layoutConfig.printWithBreakpoint) {
+      queries.push('print');
+    }
+    return queries;
+  }
 
   /**
    * Find associated breakpoint (if any)

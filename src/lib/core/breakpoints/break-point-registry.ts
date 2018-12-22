@@ -11,7 +11,7 @@ import {BreakPoint} from './break-point';
 import {BREAKPOINTS} from './break-points-token';
 import {sortAscendingPriority} from './breakpoint-tools';
 
-type OptionalBreakPoint = BreakPoint | null;
+export type OptionalBreakPoint = BreakPoint | null;
 
 /**
  * Registry of 1..n MediaQuery breakpoint ranges

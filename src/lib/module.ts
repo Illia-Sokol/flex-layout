@@ -17,6 +17,7 @@ import {
   SERVER_TOKEN,
   LayoutConfigOptions,
   LAYOUT_CONFIG,
+  DEFAULT_CONFIG,
   BreakPoint,
   BREAKPOINT,
 } from '@angular/flex-layout/core';
@@ -46,11 +47,11 @@ export class FlexLayoutModule {
       ngModule: FlexLayoutModule,
       providers: configOptions.serverLoaded ?
         [
-          {provide: LAYOUT_CONFIG, useValue: configOptions},
+          {provide: LAYOUT_CONFIG, useValue: {...DEFAULT_CONFIG, ...configOptions}},
           {provide: BREAKPOINT, useValue: breakpoints, multi: true},
           {provide: SERVER_TOKEN, useValue: true},
         ] : [
-          {provide: LAYOUT_CONFIG, useValue: configOptions},
+          {provide: LAYOUT_CONFIG, useValue: {...DEFAULT_CONFIG, ...configOptions}},
           {provide: BREAKPOINT, useValue: breakpoints, multi: true},
         ]
     };

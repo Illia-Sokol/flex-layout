@@ -5,15 +5,18 @@
  * Use of this source code is governed by an MIT-style license that can be
  * found in the LICENSE file at https://angular.io/license
  */
-import {Injectable} from '@angular/core';
+import {Inject, Injectable} from '@angular/core';
+
 import {merge, Observable, Subject, Subscription} from 'rxjs';
 import {filter} from 'rxjs/operators';
 
 import {BreakPoint} from '../breakpoints/break-point';
 import {sortDescendingPriority} from '../breakpoints/breakpoint-tools';
-import {BreakPointRegistry} from '../breakpoints/break-point-registry';
+import {BreakPointRegistry, OptionalBreakPoint} from '../breakpoints/break-point-registry';
 import {MatchMedia} from '../match-media/match-media';
 import {MediaChange} from '../media-change';
+
+import {LAYOUT_CONFIG, LayoutConfigOptions} from '../tokens/library-config';
 
 export type ClearCallback = () => void;
 export type UpdateCallback = (val: any) => void;
@@ -42,10 +45,10 @@ export class MediaMarshaller {
   private activatedBreakpoints: BreakPoint[] = [];
   private elementMap: ElementMap = new Map();
   private elementKeyMap: ElementKeyMap = new WeakMap();
-  // registry of special triggers to update elements
-  private watcherMap: WatcherMap = new WeakMap();
-  private builderMap: BuilderMap = new WeakMap();
-  private clearBuilderMap: BuilderMap = new WeakMap();
+  private watcherMap: WatcherMap = new WeakMap();     // special triggers to update elements
+  private updateMap: BuilderMap = new WeakMap();      // callback functions to update styles
+  private clearMap: BuilderMap = new WeakMap();       // callback functions to clear styles
+
   private subject: Subject<ElementMatcher> = new Subject();
 
   get activatedBreakpoint(): string {
@@ -53,7 +56,8 @@ export class MediaMarshaller {
   }
 
   constructor(protected matchMedia: MatchMedia,
-              protected breakpoints: BreakPointRegistry) {
+              protected breakpoints: BreakPointRegistry,
+              @Inject(LAYOUT_CONFIG) protected layoutConfig: LayoutConfigOptions) {
     this.observeActivations();
   }
 
@@ -62,19 +66,23 @@ export class MediaMarshaller {
    * @param mc
    */
   activate(mc: MediaChange) {
-    const bp: BreakPoint | null = this.findByQuery(mc.mediaQuery);
-    if (bp) {
-      if (mc.matches && this.activatedBreakpoints.indexOf(bp) === -1) {
-        this.activatedBreakpoints.push(bp);
-        this.activatedBreakpoints.sort(sortDescendingPriority);
-        this.updateStyles();
-      } else if (!mc.matches && this.activatedBreakpoints.indexOf(bp) !== -1) {
-        // Remove the breakpoint when it's deactivated
-        this.activatedBreakpoints.splice(this.activatedBreakpoints.indexOf(bp), 1);
-        this.updateStyles();
+    if (!this.handlePrintActivation(mc)) {
+      const bp: BreakPoint | null = this.findByQuery(mc.mediaQuery);
+
+      if (bp) {
+        if (mc.matches && this.activatedBreakpoints.indexOf(bp) === -1) {
+          this.activatedBreakpoints.push(bp);
+          this.activatedBreakpoints.sort(sortDescendingPriority);
+          this.updateStyles();
+        } else if (!mc.matches && this.activatedBreakpoints.indexOf(bp) !== -1) {
+          // Remove the breakpoint when it's deactivated
+          this.activatedBreakpoints.splice(this.activatedBreakpoints.indexOf(bp), 1);
+          this.updateStyles();
+        }
       }
     }
   }
+
 
   /**
    * initialize the marshaller with necessary elements for delegation on an element
@@ -89,9 +97,11 @@ export class MediaMarshaller {
        updateFn?: UpdateCallback,
        clearFn?: ClearCallback,
        extraTriggers: Observable<any>[] = []): void {
+
+    initBuilderMap(this.updateMap, element, key, updateFn);
+    initBuilderMap(this.clearMap, element, key, clearFn);
+
     this.buildElementKeyMap(element, key);
-    initBuilderMap(this.builderMap, element, key, updateFn);
-    initBuilderMap(this.clearBuilderMap, element, key, clearFn);
     this.watchExtraTriggers(element, key, extraTriggers);
   }
 
@@ -152,10 +162,12 @@ export class MediaMarshaller {
   /** Track element value changes for a specific key */
   trackValue(element: HTMLElement, key: string): Observable<ElementMatcher> {
     return this.subject.asObservable()
-      .pipe(filter(v => v.element === element && v.key === key));
+        .pipe(filter(v => v.element === element && v.key === key));
   }
 
-  /** update all styles for all elements on the current breakpoint */
+  /**
+   * update all styles for all elements on the current breakpoint
+   */
   updateStyles(): void {
     this.elementMap.forEach((bpMap, el) => {
       const valueMap = this.getFallback(bpMap);
@@ -184,7 +196,7 @@ export class MediaMarshaller {
    * @param key
    */
   clearElement(element: HTMLElement, key: string): void {
-    const builders = this.clearBuilderMap.get(element);
+    const builders = this.clearMap.get(element);
     if (builders) {
       const clearFn: ClearCallback = builders.get(key) as ClearCallback;
       if (!!clearFn) {
@@ -201,7 +213,7 @@ export class MediaMarshaller {
    * @param value
    */
   updateElement(element: HTMLElement, key: string, value: any): void {
-    const builders = this.builderMap.get(element);
+    const builders = this.updateMap.get(element);
     if (builders) {
       const updateFn: UpdateCallback = builders.get(key) as UpdateCallback;
       if (!!updateFn) {
@@ -292,10 +304,62 @@ export class MediaMarshaller {
    */
   private observeActivations() {
     const queries = this.breakpoints.items.map(bp => bp.mediaQuery);
+
     this.matchMedia
-        .observe(queries)
+        .observe(this.addPrintListener(queries))
         .subscribe(this.activate.bind(this));
   }
+
+  // ****************************************
+  // ******* Features for Printing **********
+  // ****************************************
+
+  protected offlineActivations: BreakPoint[] | null = null;
+
+  protected get isPrinting() {
+    return !!this.offlineActivations;
+  }
+
+  protected handlePrintActivation(change: MediaChange): boolean {
+    if (change.mediaQuery == 'print') {
+      if (change.matches && !this.isPrinting) {
+        const bp: OptionalBreakPoint = this.breakpoints.findByAlias(this.printAlias!);
+        this.enablePrintMode(bp);
+        this.updateStyles();
+      } else if (!change.matches && this.isPrinting) {
+        this.disablePrintMode();
+        this.updateStyles();
+      }
+    }
+    return this.isPrinting;
+  }
+
+  protected enablePrintMode(bp: OptionalBreakPoint) {
+    if (!!bp) {
+      this.offlineActivations = this.activatedBreakpoints;
+      this.activatedBreakpoints = [bp];
+    }
+  }
+
+  protected disablePrintMode() {
+    this.activatedBreakpoints = this.offlineActivations!;
+    this.offlineActivations = null;
+  }
+
+  protected get printAlias() {
+    return this.layoutConfig.printWithBreakpoint;
+  }
+
+  /**
+   * If configured, add listener for 'print'
+   */
+  protected addPrintListener(queries: string[]) {
+    if (!!this.printAlias) {
+      queries.push('print');
+    }
+    return queries;
+  }
+
 }
 
 function initBuilderMap(map: BuilderMap,
@@ -311,3 +375,5 @@ function initBuilderMap(map: BuilderMap,
     oldMap.set(key, input);
   }
 }
+
+
